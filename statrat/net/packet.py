@@ -44,12 +44,6 @@ class PacketType:
 
     class Outbound(Enum):
 
-        # TODO RMV
-        PlayerSession = (
-            0x06,
-            tuple()
-        )
-
         Handshake = (
             0x00,
             (
@@ -110,7 +104,6 @@ class PacketRaw:
         if not len(buff) == self.length - id_size:
             raise IncorrectPacketLengthError(
                 f'Length field ({ self.length - id_size }) does not match data ({ len(buff) })!'
-                + f'[canonical={ canonical is not None }, buff_size={ len(buff) }, length - id={ self.length - id_size }, id={ self.packet_id }]'
             )
 
         self.data = buff
@@ -148,14 +141,10 @@ class PacketHandler:
         self.encryption = False
 
         # Byte stacks
-        #   As the Minecraft packet length varies, a stack data structure is used to await the arrival
+        #   As the packets may not arrive all at once, a stack data structure is used to await the arrival
         #   of a full packet before reading it. This works by continually checking the first element of
         #   the ``bytes`` object to obtain the length, and asserting whether the length of the byte stack ≥ the length
-        #   of the packet. In the case that the byte stack is empty, the operation is, again, skipped.
-        #
-        #   It is necessarily true that the first byte of the byte stack will be a `length` field, and that of an
-        #   incomplete packet, as any full packets will have been processed and popped off the stack in previous
-        #   calls.
+        #   of the packet.
 
         self.inbound_stack = ByteStack()
         self.outbound_stack = ByteStack()
@@ -168,26 +157,11 @@ class PacketHandler:
         stack.add(data)
 
         # Read packets
-        while len(stack) >= stack.get_packet_length() != 0 and len(stack) > 0:
+        while len(stack) >= stack.get_packet_length() and len(stack) > 0:
+            raw = stack.read_n_bytes(stack.get_packet_length())
 
-            len_size, size = stack.get_packet_length(raw=True)
-
-            # TODO RMV
-            if size == 0:
-                continue
-
-            raw = stack.read_n_bytes(len_size + size)
-
-            # print('Attempting to decompress', raw)
-
-            # TODO CHeck if this is right.. eww
-            try:
-                canonical = self.compression.decompress(raw)
-                packet = PacketRaw(raw, canonical=canonical)
-            except Exception as e:
-                raise Exception(f'Failed to read packet { packet }, data={ raw }')
-
-            yield packet
+            canonical = self.compression.decompress(raw)
+            yield PacketRaw(raw, canonical=canonical)
 
     def recv_client(self, data: bytes):
 
@@ -262,7 +236,7 @@ class PacketHandler:
         """
         Write data into a Minecraft packet.
 
-        This additionally applies AES encryption, if applicable.
+        This additionally applies AES encryption and zlib compression, if applicable.
         """
 
         data = list(data)
@@ -280,8 +254,6 @@ class PacketHandler:
         # Prepend length
         length = field.VarInt().to_bytes(len(b))
         packet = length + b
-
-        # TODO I THINK they compress before encrypting? We shall see.
 
         # Compression
         packet = self.compression.compress(packet)

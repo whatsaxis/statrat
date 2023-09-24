@@ -233,8 +233,7 @@ class Angle(Field):
     # rotation in 1/256ths of a full turn. Unsigned is used in this implementation.
 
     def from_bytes(self, buffer: Buffer):
-        # TODO Fix this
-        unsigned_byte = buffer.read_n_bytes(1)
+        unsigned_byte = buffer.read(UnsignedByte())
         return 1, unsigned_byte * 2 * math.pi
 
     def to_bytes(self, angle: int, *rest):

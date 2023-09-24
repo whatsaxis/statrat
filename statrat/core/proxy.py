@@ -10,21 +10,8 @@ from statrat.core.config import Config
 
 from statrat.net.packet import PacketHandler, PacketType, State
 
-from statrat.auth.request import authenticate
+from statrat.auth.request import authenticate, ERR_MAP
 from statrat.auth.session import get_access_token, get_uuid
-
-
-# TODO Microsoft Authentication Scheme Implementation (or just ask for session token lol)
-
-# TODO We must disable encryption, as it is impossible to obtain the shared secret generated from within
-# TODO the client from a Python script.
-
-# TODO As per wiki.vg:
-#   If the server is in offline mode, it will not send the Encryption Request packet, and likewise,
-#   the client should not send Encryption Response. [...] Clients can tell that a server is in offline
-#   mode if the server sends a Login Success without sending Encryption Request.
-#
-# TODO All that we must do is block the Encryption Request from the server, and fabricate our own.
 
 
 class Proxy:
@@ -83,9 +70,6 @@ class Proxy:
         client_thread.start()
         server_thread.start()
 
-    # TODO Don't forget to encrypt packets before you send them
-    # TODO On disconnect, refresh state (cipher, packet handler, etc.)
-
     def accept_client(self):
         """Function to accept packets from the client to relay them to the server."""
 
@@ -115,6 +99,8 @@ class Proxy:
                     info(f'[P -> S] Relayed Login Start to server! { packet_raw.raw }')
 
                     # Fabricate Set Compression packet
+                    #   Compression threshold must be known beforehand, as this fake packet is sent before
+                    #   the real Set Compression is sent to the proxy by the server.
 
                     set_compression = self.packet_handler.write(
                         PacketType.Inbound.SetCompression,
@@ -145,10 +131,6 @@ class Proxy:
 
                     continue
 
-                # TODO RMV
-                # elif packet_raw | PacketType.Outbound.PlayerSession:
-                #     continue
-
                 # Send packet
                 packet = packet_raw.raw
 
@@ -176,7 +158,6 @@ class Proxy:
                         prefix=False
                     )
 
-                    # TODO Find a way to destructure dictionaries.
                     server_id, public_key, verify_token = (packet['server_id'], packet['public_key'],
                                                            packet['verify_token'])
 
@@ -191,13 +172,13 @@ class Proxy:
                     # Authenticate with Mojang servers
 
                     info('Attempting to authenticate!')
-                    print('Session ID: ', get_access_token())
+                    print('Session ID: ', get_access_token(self.config))
                     print('Public Key: ', public_key)
                     print('Server ID: ', server_id)
                     print('UUID: ', self.uuid)
 
                     auth_res = authenticate(
-                        session_id=get_access_token(),
+                        session_id=get_access_token(self.config),
                         cipher=self.cipher,
                         public_key=public_key,
                         server_id=server_id,
@@ -212,6 +193,11 @@ class Proxy:
                         status, res = auth_res
                         print('Status: ', status)
                         print('Payload: ', res)
+
+                        # Throw appropriate error.. TODO Change this later. I do not like it.
+                        for k, v in ERR_MAP.items():
+                            if res['error'].startswith(k):
+                                raise v()
 
                     secret_encrypted = public_cipher.encrypt(self.cipher.secret)
                     verify_token_encrypted = public_cipher.encrypt(verify_token)
@@ -249,7 +235,6 @@ class Proxy:
                         packet_raw
                     )['threshold']
 
-                    # TODO Is this needed?
                     self.packet_handler.compression.threshold = threshold
                     info(f'Enabled compression! [threshold={ threshold }]')
 

@@ -1,50 +1,18 @@
-import re
-import sys
-import pathlib
 import requests
 import functools
 
-from statrat.core.error import UnsupportedPlatformException
+from statrat.core.config import Config
 
 
-def get_mc_folder():
-    """A cross-platform function to get the location of the /.minecraft folder."""
+def get_access_token(config: Config):
+    """
+    Gets the access token (session ID) from the configuration directory.
 
-    # Windows
-    if sys.platform.startswith('win32'):
-        return pathlib.Path.home() / 'AppData' / 'Roaming' / '.minecraft'
+    This is obtained through looking at the cookies on a logged in minecraft.net page - weird how it's so easy, given
+    they made the MS authentication scheme absolute hell, huh?
+    """
 
-    # MacOS
-    elif sys.platform.startswith('darwin'):
-        return pathlib.Path.home() / 'Library' / 'Application Support' / 'minecraft'
-
-    # Linux
-    elif sys.platform.startswith('linux'):
-        return pathlib.Path.home() / '.minecraft'
-
-    raise UnsupportedPlatformException(f'Could not locate Minecraft folder! Unsupported platform! [{ sys.platform }]')
-
-
-TOKEN_REGEX = re.compile(r'\(Session ID is token:(.*)\)')
-
-
-def get_access_token():
-    """Gets the access token (session ID) from the Minecraft directory."""
-
-    # This only works before 1.9.1, as the Session ID is no
-    # longer in the log files after that version.
-
-
-    key = 'haha you are not getting this!'
-    return key
-
-    # with open(get_mc_folder() / 'logs' / 'latest.log') as f:
-    #     log = f.read()
-    #
-    #     match = TOKEN_REGEX.search(log)
-    #     token = match.group(1)
-    #
-    #     return token
+    return config.get('session-id')
 
 
 @functools.cache

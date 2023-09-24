@@ -1,5 +1,3 @@
-import base64
-
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.serialization import load_der_public_key
@@ -10,7 +8,6 @@ class PublicKey:
     """DER public key encryption utility class."""
 
     def __init__(self, key: bytes):
-        print('key', key)
         self.key = load_der_public_key(key, backend=default_backend())
 
     def encrypt(self, data: bytes):

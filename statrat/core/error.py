@@ -10,16 +10,16 @@ class AuthError(StatRatError):
     """Base class for authentication-related exceptions."""
 
 
-# TODO Create errors for each authentication status (incorrect session id, server id, and the other thing idk i forgot)
-
-class AccessKeyError(AuthError):
-    """
-    Base class for when something goes wrong with obtaining the access key (also known as session token).
-    """
+class InvalidSessionID(AuthError):
+    """Thrown when an invalid session ID is provided."""
 
 
-class UnsupportedPlatformException(AccessKeyError):
-    """Thrown on an attempt to get access key from Minecraft logs on an unsupported platform."""
+class InvalidServerID(AuthError):
+    """Thrown when the hex digest of the server ID contains invalid information."""
+
+
+class InvalidUUID(AuthError):
+    """Thrown when the authentication server returns that a profile ID (UUID) is invalid."""
 
 
 class NetworkError(StatRatError):

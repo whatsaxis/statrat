@@ -1,4 +1,4 @@
-from typing import Callable, Any
+from typing import Any
 
 
 class Buffer:
@@ -33,6 +33,9 @@ class Buffer:
     def read_n_bytes(self, n: int) -> bytes:
         """Read a sequence of ``n`` bytes from a buffer."""
 
+        if n > len(self.buffer):
+            raise IndexError(f'Number of bytes to be read exceeds size of buffer! ({ n } > { len(self.buffer) })')
+
         data, self.buffer = self.buffer[:n], self.buffer[n:]
         return data
 
@@ -45,23 +48,6 @@ class Buffer:
         return len(self.buffer)
 
 
-def copy_buffer(func: Callable):
-    """
-    A utility function to pass a copy of a buffer in the arguments of a function.
-
-    Many fields must read other fields from a buffer, which results in counting the offset twice; once
-    in the field from reading it, and once in the ``read()`` method of the ``Buffer()`` class. This decorator
-    avoids this problem.
-    """
-
-    def wrapper(instance, buffer: Buffer, *args, **kwargs):
-        copy = Buffer(buffer.buffer)
-
-        return func(instance, buffer, *args, **kwargs)
-
-    return wrapper
-
-
 class ByteStack(Buffer):
 
     def add(self, b: bytes):
@@ -70,7 +56,7 @@ class ByteStack(Buffer):
     def pop(self, n: int):
         return self.read_n_bytes(n)
 
-    def get_packet_length(self, *, raw=False):
+    def get_packet_length(self):
         """
         Reads the start of the buffer as a ``VarInt()`` - the length of the incoming packet.
 
@@ -81,7 +67,7 @@ class ByteStack(Buffer):
 
         offset, length = VarInt().from_bytes(Buffer(self.buffer))
 
-        if raw:
-            return offset, length
+        # You have no idea how much suffering this one line caused me.
+        length += offset
 
         return length

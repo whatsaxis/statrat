@@ -2,9 +2,15 @@ import requests
 import hashlib
 
 from statrat.core.crypto import AESCipher
-
+from statrat.core.error import InvalidSessionID, InvalidServerID, InvalidUUID
 
 SESSION_ENDPOINT = 'https://sessionserver.mojang.com/session/minecraft/join'
+
+ERR_MAP = {
+    'ForbiddenOperationException': InvalidSessionID,
+    'Invalid serverId': InvalidServerID,
+    'Invalid profileId': InvalidUUID
+}
 
 
 def hex_digest(sha1_hash: bytes):

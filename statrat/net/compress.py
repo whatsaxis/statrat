@@ -19,22 +19,24 @@ class Compression:
         buff = Buffer(data)
 
         packet_size = buff.read(VarInt())
-        data_offset, data_size = buff.read(VarInt(), raw=True)
+        uncompressed_data_offset, uncompressed_data_size = buff.read(VarInt(), raw=True)
 
-        # The data length field is just a \x00 if the size of the data does not exceed
-        # the compression threshold. In this case, no decompression is required.
-        if data_size < self.threshold:
-            data_size_computed = packet_size - data_offset - 1
-            return VarInt().to_bytes(data_size_computed) + buff.read_n_bytes(data_size_computed)
+        data = buff.read_n_bytes(packet_size - uncompressed_data_offset)
 
-        # Reading the difference of the entire packet and the size of the data length field, as the field
-        # describes the UNCOMPRESSED size of the data.
-        # Todo rmv
-        # A = buff.read_n_bytes(packet_size - data_offset)
-        A = buff.buffer
-        return VarInt().to_bytes(data_size) + zlib.decompress(
-            buff.read_n_bytes(packet_size - data_offset)
-        )
+        # [!] Packet is below compression threshold
+        #   A \x00 byte is placed between the size and data fields, which means it is below
+        #   the server compression threshold. This is what the below condition verifies.
+
+        if uncompressed_data_size == 0:
+            # `packet_size < self.threshold` is probably NOT needed. Omitted unless error occurs.
+
+            return VarInt().to_bytes(len(data)) + data
+
+        # [!] Packet is compressed
+        uncompressed_data = zlib.decompress(data)
+        packet = VarInt().to_bytes(uncompressed_data_size) + uncompressed_data
+
+        return packet
 
     def compress(self, data: bytes, *, override=False):
         """Convert a canonical packet to a compressed one."""
@@ -43,13 +45,14 @@ class Compression:
             return data
 
         buff = Buffer(data)
+
         packet_size = buff.read(VarInt())
 
+        # [!] Not compressed
         if packet_size < self.threshold:
-            # In the case that packet is not compressed, a \x00 is there instead of
-            # the data size field.
             return VarInt().to_bytes(packet_size + 1) + b'\x00' + buff.read_n_bytes(packet_size)
 
+        # [!] Compressed
         compressed = zlib.compress(buff.buffer)
         data = VarInt().to_bytes(packet_size) + compressed
 
