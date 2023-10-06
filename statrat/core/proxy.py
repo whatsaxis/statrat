@@ -4,6 +4,8 @@ import socket
 import signal
 import threading
 
+import dns
+
 from statrat.core.crypto import AESCipher, PublicKey
 from statrat.core.logging import info, success, error
 from statrat.core.config import Config
@@ -12,6 +14,13 @@ from statrat.net.packet import PacketHandler, PacketType, State
 
 from statrat.auth.request import authenticate, ERR_MAP
 from statrat.auth.session import get_access_token, get_uuid
+
+import json
+with open(r'C:\Users\smoky\PycharmProjects\statratv2\packets.json', 'r') as f:
+    packets = json.loads(f.read())
+
+def int_to_hex(n):
+    return '0x' + hex(n)[2:].zfill(2)
 
 
 class Proxy:
@@ -29,6 +38,8 @@ class Proxy:
         # Create sockets
 
         self.inbound_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.inbound_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
         self.outbound_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         # Bind outbound socket to localhost, so that client can connect to it, allowing
@@ -46,6 +57,17 @@ class Proxy:
 
         success('Connected to client!')
         info('Attempting to establish connection with server.')
+
+        # Fetch SRV records from DNS resolver
+        #   For servers using distributed load systems such as a proxy, in many cases, they do not allow for
+        #   direct connection to an IP attached to this proxy. In this case, we must connect to the address and port
+        #   outlined in the public SRV record. This is also how the 'Direct Connect' menu does it in the Notchian
+        #   client (let's say it was a source of inspiration).
+
+        # srv_records = dns.resolver.resolve(
+        #     f'_minecraft._tcp.{ self.config.get("server-address") }',
+        #     dns.rdatatype.SRV
+        # )
 
         # Establish TCP connection with server
         self.inbound_socket.connect((
@@ -78,13 +100,42 @@ class Proxy:
 
             for packet_raw in self.packet_handler.recv_client(data):
 
+                for p in packets:
+                    if p['id'] == int_to_hex(packet_raw.packet_id) and p['status'] == self.packet_handler.state.name and p['direction'] == 'Outbound':
+                        print(f'[C] Received packet { p["name"] } ({ int_to_hex(packet_raw.packet_id) })')
+                        break
+
                 # Handshake
                 if self.packet_handler.state == State.Status and packet_raw | PacketType.Outbound.Handshake:
-                    next_state = PacketHandler.read(PacketType.Outbound.Handshake, packet_raw)['next_state']
+                    data = PacketHandler.read(PacketType.Outbound.Handshake, packet_raw)
+
+                    protocol_version, server_address, server_port, next_state = (
+                        data['protocol_version'], data['server_address'],
+                        data['server_port'], data['next_state']
+                    )
+
                     info(f'Handshake packet received! State: [{ self.packet_handler.state } -> { State(next_state) }]')
+
+                    print(PacketHandler.read(PacketType.Outbound.Handshake, packet_raw))
+
+                    # The server address field is always 127.0.0.1, as the client is connecting to a local socket.
+                    # This must be edited, as servers may check this and not allow the proxy to connect.
+
+                    handshake = self.packet_handler.write(
+                        PacketType.Outbound.Handshake,
+
+                        protocol_version,
+                        self.config.get('server-address'),
+                        server_port,
+                        next_state
+                    )
+
+                    self.inbound_socket.sendall(handshake)
 
                     # Reverse Enum lookup! Cool!
                     self.packet_handler.state = State(next_state)
+
+                    continue
 
                 # Login Start
                 elif self.packet_handler.state == State.Login and packet_raw | PacketType.Outbound.LoginStart:
@@ -148,6 +199,15 @@ class Proxy:
             data = self.inbound_socket.recv(1024)
 
             for packet_raw in self.packet_handler.recv_server(data):
+
+                for p in packets:
+                    if p['id'] == int_to_hex(packet_raw.packet_id) and p['status'] == self.packet_handler.state.name and p['direction'] == 'Inbound':
+                        print(f'[S] Received packet { p["name"] } ({ int_to_hex(packet_raw.packet_id) })')
+                        break
+
+                print('ID:', packet_raw, packet_raw.raw)
+                print(packet_raw.canonical)
+                print(packet_raw.raw)
 
                 # Encryption Request
                 if self.packet_handler.state == State.Login and packet_raw | PacketType.Inbound.EncryptionRequest:
@@ -218,6 +278,7 @@ class Proxy:
 
                     # Finalize encryption process
                     self.packet_handler.encryption = True
+                    # self.packet_handler.state = State.Play
 
                     info('Encryption enabled!')
                     info(f'Switched state to { self.packet_handler.state }!')
@@ -246,6 +307,7 @@ class Proxy:
 
                 # Login Success
                 elif packet_raw | PacketType.Inbound.LoginSuccess:
+                    info('Blocked Login Success!')
 
                     # Block Login Success packet - it has already been sent
                     continue
@@ -255,7 +317,6 @@ class Proxy:
                 self.client_socket.sendall(packet)
 
                 print('[C <- P]', packet_raw)
-                # print(packet)
 
     def shutdown(self, _, __):
         """Function to shut down the proxy upon ``SIGINT``."""
