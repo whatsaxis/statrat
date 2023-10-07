@@ -8,20 +8,18 @@ from statrat.core.crypto import AESCipher
 from statrat.core.error import IncorrectPacketLengthError
 
 
+class State(Enum):
+    Status = 1
+    Login = 2
+    Play = 3
+
+
 class PacketType:
 
-    # TODO Add status to these so they do not have to be checked manually.
-
     class Inbound(Enum):
-        Disconnect = (
-            0x00,
-            (
-                ('reason', field.String()),
-            )
-        )
-
         EncryptionRequest = (
             0x01,
+            State.Login,
             (
                 ('server_id', field.String()),
                 ('public_key', field.Array(field.Byte())),
@@ -31,6 +29,7 @@ class PacketType:
 
         LoginSuccess = (
             0x02,
+            State.Login,
             (
                 ('uuid', field.String()),
                 ('username', field.String())
@@ -39,8 +38,18 @@ class PacketType:
 
         SetCompression = (
             0x03,
+            State.Login,
             (
                 ('threshold', field.VarInt()),
+            )
+        )
+
+        SystemChatMessage = (
+            0x02,
+            State.Play,
+            (
+                ('message', field.String()),
+                ('type', field.Byte())
             )
         )
 
@@ -48,6 +57,7 @@ class PacketType:
 
         Handshake = (
             0x00,
+            State.Status,
             (
                 ('protocol_version', field.VarInt()),
                 ('server_address', field.String()),
@@ -58,6 +68,7 @@ class PacketType:
 
         LoginStart = (
             0x00,
+            State.Login,
             (
                 ('username', field.String()),
             )
@@ -65,6 +76,7 @@ class PacketType:
 
         EncryptionResponse = (
             0x01,
+            State.Login,
 
             # Dynamic array field is NOT used here, as the length of the field is
             # not encrypted, but the data of the field is (why)!
@@ -80,17 +92,27 @@ class PacketType:
             )
         )
 
+        PlayerChatMessage = (
+            0x01,
+            State.Play,
+            (
+                ('message', field.String()),
+            )
+        )
+
 
 class PacketRaw:
     """Bare-bones container for information about arbitrary packets."""
 
-    def __init__(self, data: bytes, canonical: bytes = None):
+    def __init__(self, data: bytes, canonical: bytes = None, handler=None):
 
         # Canonical form is only defined if compression is enabled. Otherwise, remains `None`.
 
         # Processing
         self.raw = data
         self.canonical = canonical
+
+        self.handler = handler
 
         buff = Buffer(
             canonical
@@ -111,7 +133,10 @@ class PacketRaw:
         self.data = buff
 
     def __or__(self, other: PacketType.Inbound | PacketType.Outbound):
-        return self.packet_id == other.value[0]
+        return (
+            self.packet_id == other.value[0] and
+            ((self.handler is not None and self.handler.state == other.value[1]) or self.handler is None)
+        )
 
     def __repr__(self):
         data = self.data.buffer.hex()
@@ -120,12 +145,6 @@ class PacketRaw:
             data = data[:10] + '...'
 
         return f'PacketRaw[id={ field.VarInt().to_bytes(self.packet_id).hex() }, size={ self.length }, data={ data }]'
-
-
-class State(Enum):
-    Status = 1
-    Login = 2
-    Play = 3
 
 
 class PacketHandler:
@@ -163,7 +182,7 @@ class PacketHandler:
             raw = stack.read_n_bytes(stack.get_packet_length())
 
             canonical = self.compression.decompress(raw)
-            yield PacketRaw(raw, canonical=canonical)
+            yield PacketRaw(raw, canonical=canonical, handler=self)
 
     def recv_client(self, data: bytes):
 
@@ -191,7 +210,7 @@ class PacketHandler:
     ):
         """Read the raw data fields from a raw packet."""
 
-        packet_id, fields = packet_type.value
+        packet_id, _, fields = packet_type.value
         buffer = Buffer(packet_raw.data.buffer)
 
         data = {}
@@ -214,7 +233,7 @@ class PacketHandler:
         Returns ``bytes`` instead of Python primitives.
         """
 
-        packet_id, fields = packet_type.value
+        packet_id, _, fields = packet_type.value
         buffer = Buffer(packet_raw.data.buffer)
 
         data = {}
@@ -242,7 +261,7 @@ class PacketHandler:
         """
 
         data = list(data)
-        packet_id, fields = packet_type.value
+        packet_id, _, fields = packet_type.value
 
         # Write fields
         b = field.VarInt().to_bytes(packet_id)
@@ -261,7 +280,8 @@ class PacketHandler:
         packet = self.compression.compress(packet)
 
         # Encryption
-        if self.encryption:
+        # TODO Make it only encrypt if outbound
+        if self.encryption and isinstance(packet_type, PacketType.Outbound):
             return self.cipher.encrypt(packet)
 
         return packet

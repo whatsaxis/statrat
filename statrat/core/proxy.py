@@ -82,7 +82,7 @@ class Proxy:
             for packet_raw in self.packet_handler.recv_client(data):
 
                 # Handshake
-                if self.packet_handler.state == State.Status and packet_raw | PacketType.Outbound.Handshake:
+                if packet_raw | PacketType.Outbound.Handshake:
                     data = PacketHandler.read(PacketType.Outbound.Handshake, packet_raw)
 
                     protocol_version, server_address, server_port, next_state = (
@@ -112,7 +112,7 @@ class Proxy:
                     continue
 
                 # Login Start
-                elif self.packet_handler.state == State.Login and packet_raw | PacketType.Outbound.LoginStart:
+                elif packet_raw | PacketType.Outbound.LoginStart:
 
                     self.username = PacketHandler.read(PacketType.Outbound.LoginStart, packet_raw)['username']
                     self.uuid = get_uuid(self.username)
@@ -156,6 +156,48 @@ class Proxy:
 
                     continue
 
+                if packet_raw.packet_id == 0x01:
+                    import json
+
+                    message = self.packet_handler.read(PacketType.Outbound.PlayerChatMessage, packet_raw)['message']
+
+                    if message.startswith('.bind'):
+                        module, key = message.split(' ')[1], message.split(' ')[2]
+                        mockery = self.packet_handler.write(
+                            PacketType.Inbound.SystemChatMessage,
+                            json.dumps({
+                                'text': '▍',
+                                'color': 'blue',
+                                'bold': True,
+                                'extra': [
+                                    {
+                                        'text': ' Successfully bound ',
+                                        'color': 'white',
+                                        'bold': False
+                                    },
+                                    {
+                                        'text': module,
+                                        'color': 'blue',
+                                        'bold': False
+                                    },
+                                    {
+                                        'text': ' to ',
+                                        'color': 'white',
+                                        'bold': False
+                                    },
+                                    {
+                                        'text': key,
+                                        'color': 'blue',
+                                        'bold': False
+                                    }
+                                ]
+                            }),
+                            1
+                        )
+
+                        self.client_socket.sendall(mockery)
+                        continue
+
                 # Send packet
                 packet = packet_raw.raw
 
@@ -164,7 +206,28 @@ class Proxy:
 
                 self.inbound_socket.sendall(packet)
 
-                print('[P -> S]', packet_raw)
+                # if packet_raw.packet_id == 0x0a:
+                #
+                #     import json
+                #
+                #     mockery = self.packet_handler.write(
+                #         PacketType.Inbound.SystemChatMessage,
+                #         json.dumps({
+                #             'text': '▍',
+                #             'color': 'blue',
+                #             'bold': True,
+                #             'extra': [
+                #                 {
+                #                     'text': ' [VIP] whatsaxis',
+                #                     'color': 'green',
+                #                     'bold': False
+                #                 }
+                #             ]
+                #         }),
+                #         1
+                #     )
+                #
+                #     self.client_socket.sendall(mockery)
 
     def accept_server(self):
         """Function to accept packets from the server to relay them to the client."""
@@ -175,7 +238,7 @@ class Proxy:
             for packet_raw in self.packet_handler.recv_server(data):
 
                 # Encryption Request
-                if self.packet_handler.state == State.Login and packet_raw | PacketType.Inbound.EncryptionRequest:
+                if packet_raw | PacketType.Inbound.EncryptionRequest:
                     packet = self.packet_handler.read_bytes(
                         PacketType.Inbound.EncryptionRequest,
                         packet_raw,
@@ -250,7 +313,7 @@ class Proxy:
                     continue
 
                 # Compression Set
-                elif self.packet_handler.state == State.Login and packet_raw | PacketType.Inbound.SetCompression:
+                elif packet_raw | PacketType.Inbound.SetCompression:
                     info(f'Received Set Compression! { packet_raw }')
                     self.packet_handler.compression.enabled = True
 
@@ -266,7 +329,7 @@ class Proxy:
                     continue
 
                 # Login Success
-                elif self.packet_handler.state == State.Login and packet_raw | PacketType.Inbound.LoginSuccess:
+                elif packet_raw | PacketType.Inbound.LoginSuccess:
                     info('Blocked Login Success!')
 
                     # Finalize login - this is the last step as Login Success is already sent
@@ -280,7 +343,47 @@ class Proxy:
                 packet = packet_raw.raw
                 self.client_socket.sendall(packet)
 
+                # print(packet_raw)
+                # print(packet_raw.raw)
+
+                if packet_raw.packet_id == 0x3e:
+                    import statrat.net.field as field
+                    team_name = packet_raw.data.read(field.String())
+                    mode = packet_raw.data.read(field.Byte())
+
+                    if mode == 3:
+                        no_entities = packet_raw.data.read(field.VarInt())
+
+                        entities = []
+
+                        for i in range(no_entities):
+                            entities.append(packet_raw.data.read(field.String()))
+
+                            import json
+
+                            mockery = self.packet_handler.write(
+                                PacketType.Inbound.SystemChatMessage,
+                                json.dumps({
+                                    'text': '▍',
+                                    'color': 'blue',
+                                    'bold': True,
+                                    'extra': [
+                                        {
+                                            'text': f' [VIP] { entities[i] }',
+                                            'color': 'green',
+                                            'bold': False
+                                        }
+                                    ]
+                                }),
+                                1
+                            )
+
+                            self.client_socket.sendall(mockery)
+
                 # print('[C <- P]', packet_raw)
+                #
+                # if packet_raw.packet_id not in {0x38}:
+                #     print(packet_raw, packet_raw.data.buffer)
 
     def shutdown(self, _, __):
         """Function to shut down the proxy upon ``SIGINT``."""
