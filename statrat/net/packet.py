@@ -10,6 +10,8 @@ from statrat.core.error import IncorrectPacketLengthError
 
 class PacketType:
 
+    # TODO Add status to these so they do not have to be checked manually.
+
     class Inbound(Enum):
         Disconnect = (
             0x00,
