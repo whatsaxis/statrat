@@ -9,7 +9,7 @@ from statrat.core.logging import info, success
 from statrat.core.config import Config
 
 from statrat.auth.profile import Profile
-from statrat.net.packet import PacketHandler, PacketRaw, InboundEnum, OutboundEnum
+from statrat.net.packet import PacketHandler, Packet, PacketRaw, InboundEnum, OutboundEnum, Direction
 
 from statrat.mixins.motd import MOTDMixin
 from statrat.mixins.login import LoginMixin
@@ -35,7 +35,6 @@ class Proxy:
         self.client_socket, self.client_address = None, None
 
         # State
-        # TODO Extract accept function (like the _recv())
         self.client_connected = False
         self.server_connected = False
 
@@ -119,24 +118,7 @@ class Proxy:
                 continue
 
             for packet_raw in self.packet_handler.recv_client(data):
-                cancelled = False
-
-                for packet_type in self.outbound_listeners.keys():
-                    # Call listeners for detected packet
-                    if packet_raw | packet_type:
-                        for listener in self.outbound_listeners[packet_type]:
-                            # Make sure to only switch the cancelled state if it isn't already cancelled
-                            should_send_packet = listener(packet_raw.copy())
-
-                            cancelled = (
-                                not should_send_packet
-                                if cancelled is False
-                                else True
-                            )
-
-                        # Only use first packet type that matches.
-                        # Otherwise, changing something like the status can result in collisions with the same packet.
-                        break
+                cancelled = self._call_listeners(packet_raw, direction=Direction.Outbound)
 
                 # Check if packet is cancelled or server is not connected
                 if cancelled or not self.server_connected:
@@ -165,23 +147,7 @@ class Proxy:
                 continue
 
             for packet_raw in self.packet_handler.recv_server(data):
-                cancelled = False
-
-                for packet_type in self.inbound_listeners.keys():
-
-                    # Call listeners for detected packet
-                    if packet_raw | packet_type:
-                        for listener in self.inbound_listeners[packet_type]:
-                            # Make sure to only switch the cancelled state if it isn't already cancelled
-                            should_send_packet = listener(packet_raw.copy())
-
-                            cancelled = (
-                                not should_send_packet
-                                if cancelled is False
-                                else True
-                            )
-
-                        break
+                cancelled = self._call_listeners(packet_raw, direction=Direction.Inbound)
 
                 # Check if the packet is cancelled or the client is not connected (for some reason)
                 if cancelled or not self.client_connected:
@@ -190,30 +156,63 @@ class Proxy:
                 # Send packet
                 self.send_client(packet_raw)
 
-    '''Sending'''
-    # TODO Will be refactored when the Packet() class is written
+    def _call_listeners(self, packet_raw: PacketRaw, direction: Direction):
+        listeners = (
+            self.inbound_listeners
+            if direction == direction.Inbound
+            else
+            self.outbound_listeners
+        )
 
-    def send_client(self, packet: bytes | PacketRaw):
+        cancelled = False
+
+        for packet_type in listeners.keys():
+
+            # Call listeners for detected packet
+            if packet_raw | packet_type:
+                for listener in listeners[packet_type]:
+                    # Make sure to only switch the cancelled state if it isn't already cancelled
+                    should_send_packet = listener(
+                        self.packet_handler.create_packet(packet_type, packet_raw.copy())
+                    )
+
+                    cancelled = (
+                        not should_send_packet
+                        if cancelled is False
+                        else True
+                    )
+
+                # Only use first packet type that matches.
+                # Otherwise, changing something like the status can result in collisions with the same packet.
+                break
+
+        return cancelled
+
+    '''Sending'''
+
+    def send_client(self, packet: Packet | PacketRaw | bytes):
         """Send a packet to the client."""
 
         try:
             if isinstance(packet, bytes):
                 self.client_socket.sendall(packet)
-                return
-
-            self.client_socket.sendall(packet.raw)
+            elif isinstance(packet, PacketRaw):
+                self.client_socket.sendall(packet.raw)
+            elif isinstance(packet, Packet):
+                self.client_socket.sendall(packet.construct())
         except ConnectionError:
             self.dc_mixin.disconnect(DisconnectReason.Quit)
 
-    def send_server(self, packet: bytes | PacketRaw):
+    def send_server(self, packet: Packet | PacketRaw | bytes):
         """Send a packet to the server."""
 
         try:
             if isinstance(packet, bytes):
                 self.inbound_socket.sendall(packet)
-                return
-
-            self.inbound_socket.sendall(packet.raw)
+            elif isinstance(packet, PacketRaw):
+                self.inbound_socket.sendall(packet.raw)
+            elif isinstance(packet, Packet):
+                self.inbound_socket.sendall(packet.construct())
         except ConnectionError:
             self.dc_mixin.disconnect(DisconnectReason.Quit)
 

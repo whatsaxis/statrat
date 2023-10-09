@@ -8,7 +8,7 @@ SUCCESS_COLOR = (204, 255, 51)
 WARNING_COLOR = (255, 204, 85)
 ERROR_COLOR = (255, 51, 102)
 
-# TODO A redux-type broadcast thing for logging
+# TODO A broadcast-based thing for logging
 
 
 def colored(msg: str, color: tuple[int, int, int]):

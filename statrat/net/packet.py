@@ -1,13 +1,16 @@
 import os
 
 from enum import Enum
+from typing import Any
 
-import statrat.net.field as field
+import statrat.net.field as fields
+
 from statrat.net.buffer import Buffer, ByteStack
 from statrat.net.compress import Compression
 
 from statrat.core.crypto import AESCipher
-from statrat.core.error import IncorrectPacketLengthError
+from statrat.core.helpers import remove_prefix
+from statrat.core.error import IncorrectPacketLengthError, IncompletePacketError, MissingHandlerError
 
 
 class State(Enum):
@@ -39,7 +42,7 @@ class OutboundEnum(Enum):
 class PacketRaw:
     """Bare-bones container for information about arbitrary packets."""
 
-    def __init__(self, data: bytes, canonical: bytes = None, handler=None):
+    def __init__(self, data: bytes, canonical: bytes = None, handler: 'PacketHandler' = None):
 
         # Canonical form is only defined if compression is enabled. Otherwise, remains `None`.
 
@@ -56,8 +59,8 @@ class PacketRaw:
         )
 
         # Extract length and ID
-        self.length = buff.read(field.VarInt())
-        id_size, self.packet_id = buff.read(field.VarInt(), raw=True)
+        self.length = buff.read(fields.VarInt())
+        id_size, self.packet_id = buff.read(fields.VarInt(), offset=True)
 
         # Dump data
         if not len(buff) == self.length - id_size:
@@ -85,7 +88,127 @@ class PacketRaw:
         if len(data) > 10:
             data = data[:10] + '...'
 
-        return f'PacketRaw[id={ field.VarInt().to_bytes(self.packet_id).hex() }, size={ self.length }, data={ data }]'
+        return f'PacketRaw[id={ fields.VarInt().to_bytes(self.packet_id).hex() }, size={ self.length }, data={ data }]'
+
+
+class Packet:
+    """Specialised container about a specific packet."""
+
+    def __init__(
+            self,
+            packet_type: InboundEnum | OutboundEnum,
+            data: bytes | PacketRaw | None = None,
+            handler: 'PacketHandler' = None
+    ):
+        if handler is None:
+            raise MissingHandlerError()
+
+        self.raw = data
+        self.packet_type = packet_type
+
+        self.handler = handler
+
+        self._packet_fields: dict[str, fields.Field] = {
+            name: field_type
+            for name, field_type in self.packet_type.value[2]
+        }
+
+        if data is None:
+            fields_empty = {
+                f: None
+                for f in self.packet_type.value[2].keys()
+            }
+
+            self.fields_real = fields_empty.copy()
+            self.fields_byte = fields_empty.copy()
+
+            return
+
+        packet_raw = data
+        if isinstance(data, bytes):
+            packet_raw = PacketRaw(data)
+
+        # Load fields
+        self.fields_real = PacketHandler.read(packet_type, packet_raw)
+        self.fields_byte = PacketHandler.read_bytes(packet_type, packet_raw)
+
+    def get_fields(self, *field_names: str):
+        """Get the primitive values of select fields."""
+
+        if len(field_names) == 1:
+            return self.fields_real[field_names[0]]
+
+        return tuple(
+            self.fields_real[f]
+            for f in field_names
+        )
+
+    def get_bytes(self, *field_names: str, prefix=True):
+        """Get the bytes representation of select fields."""
+
+        # Destructuring would set a variable to a tuple containing the value
+        # if there is only one value.
+        if len(field_names) == 1:
+            field_name = field_names[0]
+            data = self.fields_byte[field_name]
+
+            if prefix:
+                return data
+
+            return remove_prefix(
+                field=self._packet_fields[field_name],
+                data=data
+            )
+
+        # More than 1 value
+        if prefix:
+            return tuple(
+                self.fields_byte[f]
+                for f in field_names
+            )
+
+        return tuple(
+            remove_prefix(
+                field=self._packet_fields[f],
+                data=self.fields_byte[f]
+            )
+            for f in field_names
+        )
+
+    def write_field(self, field_name: str, data: Any):
+        """Writes a value to a certain field."""
+
+        self.fields_real[field_name] = data
+        self.fields_byte[field_name] = self._packet_fields[field_name].to_bytes(data)
+
+    def write_bytes(self, field_name: str, data: bytes):
+        """Writes to the byte representation of a certain field."""
+
+        self.fields_byte[field_name] = data
+        self.fields_real[field_name] = self._packet_fields[field_name].from_bytes(Buffer(data))
+
+    def construct(self):
+        """Converts a `Packet()` object to bytes."""
+
+        if not all(v is not None for v in self.fields_real.values()):
+            raise IncompletePacketError()
+
+        return self.handler.write(
+            self.packet_type,
+            *self.fields_real.values()
+        )
+
+    def __repr__(self):
+        packet_type_fields = self.packet_type.value[2]
+
+        field_data = ''
+        for i, (name, value) in enumerate(self.fields_real.items()):
+            field_data += f'\n        { packet_type_fields[i][1] } { name }={ value }'
+
+        return f'''Packet[
+    type={ self.packet_type },
+    size={ self.raw.length },
+    fields=[{ field_data }\n    ]\n]'''
 
 
 class PacketHandler:
@@ -147,17 +270,15 @@ class PacketHandler:
     def read(
             packet_type: InboundEnum | OutboundEnum | int,
             packet_raw: PacketRaw
-    ):
+    ) -> dict[str, Any]:
         """Read the raw data fields from a raw packet."""
 
-        # TODO Improve PacketRaw to have a get_fields function
-
-        packet_id, _, fields = packet_type.value
+        packet_id, _, packet_fields = packet_type.value
         buffer = Buffer(packet_raw.data.buffer)
 
         data = {}
 
-        for f in fields:
+        for f in packet_fields:
             field_name, field_type = f
             data[field_name] = buffer.read(field_type)
 
@@ -170,30 +291,19 @@ class PacketHandler:
             *, prefix=True
     ):
         """
-        Read the raw data fields from a raw packet.
+        Read data fields as bytes from a raw packet.
 
         Returns ``bytes`` instead of Python primitives.
         """
 
-        packet_id, _, fields = packet_type.value
+        packet_id, _, packet_fields = packet_type.value
         buffer = Buffer(packet_raw.data.buffer)
 
         data = {}
 
-        for f in fields:
+        for f in packet_fields:
             field_name, field_type = f
-
-            print('Reading', field_name, field_type)
-
-            if not prefix:
-                data[field_name] = field.remove_prefix(
-                    field=field_type,
-                    data=buffer.read(field_type, as_bytes=True)
-                )
-
-                continue
-
-            data[field_name] = buffer.read(field_type, as_bytes=True)
+            data[field_name] = buffer.read_bytes(field_type, prefix=prefix)
 
         return data
 
@@ -205,19 +315,19 @@ class PacketHandler:
         """
 
         data = list(data)
-        packet_id, _, fields = packet_type.value
+        packet_id, _, packet_fields = packet_type.value
 
         # Write fields
-        b = field.VarInt().to_bytes(packet_id)
+        b = fields.VarInt().to_bytes(packet_id)
 
-        for f in fields:
+        for f in packet_fields:
             field_name, field_type = f
 
             # Will ALWAYS be 1 value long
             b += field_type.to_bytes(data.pop(0))
 
         # Prepend length
-        length = field.VarInt().to_bytes(len(b))
+        length = fields.VarInt().to_bytes(len(b))
         packet = length + b
 
         # Compression
@@ -229,3 +339,6 @@ class PacketHandler:
             return self.cipher.encrypt(packet)
 
         return packet
+
+    def create_packet(self, packet_type: InboundEnum | OutboundEnum, data: bytes | PacketRaw | None = None,):
+        return Packet(packet_type, data, handler=self)

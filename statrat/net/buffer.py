@@ -1,5 +1,8 @@
 from typing import Any
 
+import statrat.net.field as fields
+from statrat.core.helpers import remove_prefix
+
 
 class Buffer:
 
@@ -10,27 +13,44 @@ class Buffer:
 
         self.buffer = data
 
-    def read(self, field, *, raw=False, as_bytes=False) -> Any | tuple[int, Any]:
+    def read(self, field: 'fields.Field', *, offset=False) -> Any | tuple[int, Any]:
         """
         Read a field from a buffer.
 
-        Optional ``raw`` parameter to return the offset as well.
+        Optional ``raw`` parameter to return the offset.
         """
 
-        # TODO Refactor as_bytes to a separate read_bytes() function
-
         # Read field and splice buffer
-        offset, data = field.from_bytes(self.copy())
+        field_offset, data = field.from_bytes(self.copy())
+        self.buffer = self.buffer[field_offset:]
 
-        if as_bytes:
-            data = self.buffer[:offset]
-
-        self.buffer = self.buffer[offset:]
-
-        if not raw:
+        if not offset:
             return data
 
-        return offset, data
+        return field_offset, data
+
+    def read_bytes(self, field: 'fields.Field', *, offset=False, prefix=False) -> bytes | tuple[int, bytes]:
+        """
+        Read a field from a buffer, returning the `bytes`.
+
+        ``offset`` parameter to return the offset.
+        ``prefix`` parameter to remove `VarInt()` and prefixes (i.e. return only the data as bytes)
+        """
+
+        # Read field and splice buffer
+        field_offset, _ = field.from_bytes(self.copy())
+
+        data = self.buffer[:field_offset]
+        self.buffer = self.buffer[field_offset:]
+
+        # Remove prefix
+        if not prefix and field.has_prefix:
+            data = remove_prefix(field, data)
+
+        if not offset:
+            return data
+
+        return field_offset, data
 
     def read_n_bytes(self, n: int) -> bytes:
         """Read a sequence of ``n`` bytes from a buffer."""

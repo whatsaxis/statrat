@@ -1,6 +1,5 @@
 # Configuration & Testing
-config.yaml
-test.py
+testing/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

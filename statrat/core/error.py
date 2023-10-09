@@ -28,5 +28,17 @@ class NetworkError(StatRatError):
 
 class IncorrectPacketLengthError(NetworkError):
     """
-    Thrown when a ``PacketMeta()`` object receives raw bytes that exceed or fall short of the length field.
+    Thrown when the length of the raw bytes exceed or fall short of the length field of a packet.
+    """
+
+
+class IncompletePacketError(NetworkError):
+    """
+    Thrown when attempting to construct a `Packet()` while not having provided values for all fields.
+    """
+
+
+class MissingHandlerError(NetworkError):
+    """
+    Thrown when attempting to construct a `Packet()` while not having provided a handler.
     """

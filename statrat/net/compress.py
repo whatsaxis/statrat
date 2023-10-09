@@ -19,7 +19,7 @@ class Compression:
         buff = Buffer(data)
 
         packet_size = buff.read(VarInt())
-        uncompressed_data_offset, uncompressed_data_size = buff.read(VarInt(), raw=True)
+        uncompressed_data_offset, uncompressed_data_size = buff.read(VarInt(), offset=True)
 
         data = buff.read_n_bytes(packet_size - uncompressed_data_offset)
 

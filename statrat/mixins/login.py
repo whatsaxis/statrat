@@ -1,6 +1,6 @@
 import uuid
 
-from statrat.core.logging import info, success, error
+from statrat.core.logging import info, success, warn, error
 from statrat.core.crypto import PublicKey
 from statrat.core.mixin import Mixin
 
@@ -8,7 +8,7 @@ from statrat.auth.session import get_access_token
 from statrat.auth.request import authenticate, ERR_MAP
 
 import statrat.net.field as field
-from statrat.net.packet import PacketHandler, PacketRaw, State, InboundEnum, OutboundEnum
+from statrat.net.packet import Packet, State, InboundEnum, OutboundEnum
 
 
 class LoginPacket:
@@ -92,13 +92,12 @@ class LoginMixin(Mixin):
         '''Outbound'''
 
         @self.proxy.listen(LoginPacket.Outbound.Handshake)
-        def handshake_listener(packet_raw: PacketRaw):
-            print('hs', packet_raw.raw)
-            data = PacketHandler.read(LoginPacket.Outbound.Handshake, packet_raw)
-
-            protocol_version, server_address, server_port, next_state = (
-                data['protocol_version'], data['server_address'],
-                data['server_port'], data['next_state']
+        def handshake_listener(packet: Packet):
+            protocol_version, server_address, server_port, next_state = packet.get_fields(
+                'protocol_version',
+                'server_address',
+                'server_port',
+                'next_state'
             )
 
             info(f'Handshake packet received! State: [{ self.proxy.packet_handler.state } -> { State(next_state) }]')
@@ -126,14 +125,14 @@ class LoginMixin(Mixin):
             return False
 
         @self.proxy.listen(LoginPacket.Outbound.LoginStart)
-        def login_start_listener(packet_raw: PacketRaw):
-            self.proxy.profile.username = PacketHandler.read(LoginPacket.Outbound.LoginStart, packet_raw)['username']
+        def login_start_listener(packet: Packet):
+            self.proxy.profile.username = packet.get_fields('username')
 
             info(f'Received Login Start! [username={ self.proxy.profile.username }, uuid={ self.proxy.profile.uuid }]')
 
             # Send Login Start packet in advance
-            self.proxy.send_server(packet_raw.raw)
-            info(f'[P -> S] Relayed Login Start to server! { packet_raw.raw }')
+            self.proxy.send_server(packet)
+            info(f'[P -> S] Relayed Login Start to server! { packet.raw.raw }')
 
             # Fabricate Set Compression packet
             #   Compression threshold must be known beforehand, as this fake packet is sent before
@@ -171,20 +170,13 @@ class LoginMixin(Mixin):
         '''Inbound'''
 
         @self.proxy.listen(LoginPacket.Inbound.EncryptionRequest)
-        def encryption_request_listener(packet_raw: PacketRaw):
-            print(packet_raw)
-            print(packet_raw.raw)
-            print(packet_raw.data)
-
-            packet = PacketHandler.read_bytes(
-                LoginPacket.Inbound.EncryptionRequest,
-                packet_raw,
-
+        def encryption_request_listener(packet: Packet):
+            server_id, public_key, verify_token = packet.get_bytes(
+                'server_id',
+                'public_key',
+                'verify_token',
                 prefix=False
             )
-
-            server_id, public_key, verify_token = (packet['server_id'], packet['public_key'],
-                                                   packet['verify_token'])
 
             info('Received Encryption request!')
 
@@ -219,7 +211,7 @@ class LoginMixin(Mixin):
                 print('Status: ', status)
                 print('Payload: ', res)
 
-                # Throw appropriate error.. TODO Change this later. I do not like it.
+                # Throw appropriate error
                 for k, v in ERR_MAP.items():
                     if res['error'].startswith(k):
                         raise v()
@@ -239,7 +231,7 @@ class LoginMixin(Mixin):
 
             self.proxy.send_server(enc_response)
 
-            info(f'[P -> S] Sent Encryption Response! {enc_response}')
+            info(f'[P -> S] Sent Encryption Response! { enc_response }')
 
             # Finalize encryption process
             self.proxy.packet_handler.encryption = True
@@ -250,17 +242,21 @@ class LoginMixin(Mixin):
             return False
 
         @self.proxy.listen(LoginPacket.Inbound.SetCompression)
-        def set_compression_listener(packet_raw: PacketRaw):
-            info(f'Received Set Compression! {packet_raw}')
+        def set_compression_listener(packet: Packet):
+            info(f'Received Set Compression! { packet.raw.raw }')
+
+            threshold = packet.get_fields('threshold')
+
+            if not self.proxy.packet_handler.compression.threshold == threshold:
+                warn(
+                    f'Compression threshold in configuration differs to the one provided by the server!'
+                    f' [config={ self.proxy.packet_handler.compression.threshold }, server={ threshold }]'
+                )
+
+                self.proxy.packet_handler.compression.threshold = threshold
+
             self.proxy.packet_handler.compression.enabled = True
-
-            threshold = self.proxy.packet_handler.read(
-                LoginPacket.Inbound.SetCompression,
-                packet_raw
-            )['threshold']
-
-            self.proxy.packet_handler.compression.threshold = threshold
-            info(f'Enabled compression! [threshold={threshold}]')
+            info(f'Enabled compression! [threshold={ threshold }]')
 
             # Block Compression Set packet - it has already been sent
             return False
@@ -271,7 +267,7 @@ class LoginMixin(Mixin):
 
             # Finalize login - this is the last step as Login Success is already sent
             self.proxy.packet_handler.state = State.Play
-            info(f'Switched state to {self.proxy.packet_handler.state}!')
+            info(f'Switched state to { self.proxy.packet_handler.state }!')
 
             # Block Login Success packet - it has already been sent
             return False

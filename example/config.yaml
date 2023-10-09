@@ -1,0 +1,9 @@
+server-address: some.server
+server-port: 25565
+
+favicon: "Rat 64x64.png"
+motd: "            \u00A7c\u00A7ka\u00A7r \u00A79\u00A7lStatRat Proxy \u00A7r\u00A76[1.8.9] \u00A7c\u00A7ka\u00A7r\n                Definitely not a virus!"
+
+compression-threshold: 256
+
+session-id: "session-id"

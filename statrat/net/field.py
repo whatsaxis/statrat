@@ -2,7 +2,7 @@ import math
 import struct
 
 from statrat.net.buffer import Buffer
-from statrat.core.math import twos_comp
+from statrat.core.helpers import twos_comp
 
 from typing import Any
 
@@ -28,6 +28,9 @@ class Field:
             self.format,
             data[0]
         )
+
+    def __repr__(self):
+        return self.__class__.__name__
 
 
 """Helpers"""
@@ -88,23 +91,6 @@ def write_var(value: int):
 
         # Truncate last bits
         value >>= 7
-
-
-def remove_prefix(field: Field, data: bytes, *, use_long=False):
-    """Function to remove a Var prefix from data."""
-
-    data = Buffer(data)
-
-    if field.has_prefix:
-        data.read(
-            VarLong()
-            if use_long
-            else VarInt()
-        )
-
-        return data.buffer
-
-    return data
 
 
 """Protocol Implementations"""
@@ -174,7 +160,7 @@ class String(Field):
     def from_bytes(self, buffer: Buffer):
 
         # Prefixed with its length as a VarInt
-        len_size, length = buffer.read(VarInt(), raw=True)
+        len_size, length = buffer.read(VarInt(), offset=True)
 
         # Obtain string payload
         payload = buffer.read_n_bytes(length)
@@ -275,6 +261,9 @@ class Optional(Field):
 
         return Bool().to_bytes(True) + self.field.to_bytes(value)
 
+    def __repr__(self):
+        return f'Optional[{ repr(self.field) }]'
+
 
 class Array(Field):
     """An array of a specific field."""
@@ -297,18 +286,19 @@ class Array(Field):
         # Get quantity, if it isn't provided
         if self.qty is None:
             reset_qty = True
-            offset, self.qty = buffer.read(VarInt(), raw=True)
+            offset, self.qty = buffer.read(VarInt(), offset=True)
 
         values = []
 
         for _ in range(self.qty):
-            size, value = buffer.read(self.field, raw=True)
+            size, value = buffer.read(self.field, offset=True)
 
             offset += size
             values.append(value)
 
-        # Reading an array sets its quantity. It is a lot more efficient and clean to simply put the size back to its
-        # original state, preserving the initial parameters of the definition, than make a deep copy every time.
+        # Reading an Array() sets its quantity.
+        # It is a lot more efficient and clean to simply put the size back to its original state, preserving the initial
+        # parameters of the definition, than to make a deep copy every time.
         if reset_qty:
             self.qty = None
 
@@ -326,3 +316,6 @@ class Array(Field):
             b += self.field.to_bytes(i)
 
         return b
+
+    def __repr__(self):
+        return f'Array[{ repr(self.field) }]'

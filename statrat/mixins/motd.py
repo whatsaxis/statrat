@@ -5,7 +5,7 @@ from statrat.core.mixin import Mixin
 from statrat.core.logging import info, warn, success
 
 from statrat.net.field import String
-from statrat.net.packet import PacketHandler, PacketRaw, State, InboundEnum, OutboundEnum
+from statrat.net.packet import Packet, State, InboundEnum, OutboundEnum
 
 from statrat.mixins.login import LoginPacket
 from statrat.mixins.disconnect import DisconnectReason
@@ -37,17 +37,8 @@ class MOTDMixin(Mixin):
     def register(self):
 
         @self.proxy.listen(LoginPacket.Outbound.Handshake)
-        def handshake_listener(packet_raw: PacketRaw):
-            # TODO Edit with packet class and read_fields()
-
-            print('handshake received', packet_raw.raw)
-
-            next_state = State(
-                PacketHandler.read(
-                    LoginPacket.Outbound.Handshake,
-                    packet_raw
-                )['next_state']
-            )
+        def handshake_listener(packet: Packet):
+            next_state = State(packet.get_fields('next_state'))
 
             # Client is connecting to server
             if next_state == State.Login:

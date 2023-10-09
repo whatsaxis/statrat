@@ -4,7 +4,7 @@ from statrat.core.logging import info, disconnect
 from statrat.core.mixin import Mixin
 
 from statrat.net.field import String
-from statrat.net.packet import PacketRaw, InboundEnum, State
+from statrat.net.packet import Packet, InboundEnum, State
 
 
 class DisconnectReason(Enum):
@@ -42,17 +42,14 @@ class DisconnectMixin(Mixin):
     def register(self):
         """Packet listeners to do with disconnects."""
 
-        # TODO Disconnect reasons.
-
         # Disconnects from Server -> Client
 
         @self.proxy.listen(DisconnectPacket.Inbound.DisconnectLogin)
         @self.proxy.listen(DisconnectPacket.Inbound.DisconnectPlay)
-        def disconnect_listener(packet_raw: PacketRaw):
-            # TODO Make this better when Packet() class is implemented using the packet type field
+        def disconnect_listener(packet: Packet):
             self.disconnect(
                 DisconnectReason.DisconnectLogin
-                if packet_raw | DisconnectPacket.Inbound.DisconnectLogin
+                if packet.packet_type == DisconnectPacket.Inbound.DisconnectLogin
                 else DisconnectReason.DisconnectPlay
             )
 
