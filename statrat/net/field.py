@@ -292,9 +292,11 @@ class Array(Field):
         """Read a set number of fields and compact them as an array."""
 
         offset = 0
+        reset_qty = False
 
         # Get quantity, if it isn't provided
         if self.qty is None:
+            reset_qty = True
             offset, self.qty = buffer.read(VarInt(), raw=True)
 
         values = []
@@ -304,6 +306,11 @@ class Array(Field):
 
             offset += size
             values.append(value)
+
+        # Reading an array sets its quantity. It is a lot more efficient and clean to simply put the size back to its
+        # original state, preserving the initial parameters of the definition, than make a deep copy every time.
+        if reset_qty:
+            self.qty = None
 
         return offset, tuple(values)
 

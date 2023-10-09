@@ -1,17 +1,19 @@
-import os
-import uuid
 import socket
+import typing
 import signal
 import threading
 
-from statrat.core.crypto import AESCipher, PublicKey
-from statrat.core.logging import info, success, error
+from collections import defaultdict
+
+from statrat.core.logging import info, success
 from statrat.core.config import Config
 
-from statrat.net.packet import PacketHandler, PacketType, State
+from statrat.auth.profile import Profile
+from statrat.net.packet import PacketHandler, PacketRaw, InboundEnum, OutboundEnum
 
-from statrat.auth.request import authenticate, ERR_MAP
-from statrat.auth.session import get_access_token, get_uuid
+from statrat.mixins.motd import MOTDMixin
+from statrat.mixins.login import LoginMixin
+from statrat.mixins.disconnect import DisconnectMixin, DisconnectReason
 
 
 class Proxy:
@@ -25,6 +27,42 @@ class Proxy:
         # Shutdown routine
 
         signal.signal(signal.SIGINT, self.shutdown)
+
+        # Sockets
+        self.inbound_socket = None
+        self.outbound_socket = None
+
+        self.client_socket, self.client_address = None, None
+
+        # State
+        # TODO Extract accept function (like the _recv())
+        self.client_connected = False
+        self.server_connected = False
+
+        self.profile = None
+        self.packet_handler = None
+
+        # Packet Listeners
+        #   Used to intercept certain packets in order to perform select actions.
+
+        self.inbound_listeners = defaultdict(lambda: [])
+        self.outbound_listeners = defaultdict(lambda: [])
+
+        # Threads
+        self._client_thread = None
+        self._server_thread = None
+
+        # Inject mixins
+
+        # [!] MOTD is a special mixin as it alters the state of `connected`. It must have priority as further listener
+        # calls require data received from the server.
+        MOTDMixin(self)
+
+        LoginMixin(self)
+        self.dc_mixin = DisconnectMixin(self)
+
+    def start(self):
+        """Function to start the server."""
 
         # Create sockets
 
@@ -44,358 +82,168 @@ class Proxy:
         info('Waiting for client connection! Log on to `localhost` to connect!')
 
         # Wait for client to connect to local socket
+        # TODO Sometimes the client connects but does not think it is connected. I do not know why.
         self.outbound_socket.listen()
         self.client_socket, self.client_address = self.outbound_socket.accept()
 
         success('Connected to client!')
-        info('Attempting to establish connection with server.')
 
-        # Establish TCP connection with server
-        self.inbound_socket.connect((
-            self.config.get('server-address'),
-            self.config.get('server-port')
-        ))
+        # Initialise profile and packet handler
+        self.profile = Profile()
+        self.packet_handler = PacketHandler()
 
-        success('Connection to server established!')
-
-        # State
-
-        self.username = None
-        self.uuid = None
-
-        self.cipher = AESCipher(secret=os.urandom(16))
-        self.packet_handler = PacketHandler(self.cipher)
+        self.client_connected = True
 
         # Relay all packets from one party to the other
-        client_thread = threading.Thread(target=self.accept_client)
-        server_thread = threading.Thread(target=self.accept_server)
+        if self._client_thread is None and self._server_thread is None:
 
-        client_thread.start()
-        server_thread.start()
+            self._client_thread = threading.Thread(target=self.accept_client)
+            self._server_thread = threading.Thread(target=self.accept_server)
+
+            self._client_thread.start()
+            self._server_thread.start()
 
     def accept_client(self):
         """Function to accept packets from the client to relay them to the server."""
 
         while True:
-            data = self.client_socket.recv(1024)
+            if not self.client_connected:
+                continue
+
+            try:
+                data = self.client_socket.recv(1024)
+
+            # When the client clicks on the Disconnect button, it forcibly closes the TCP connection.
+            except ConnectionError:
+                self.dc_mixin.disconnect(DisconnectReason.Quit)
+                continue
 
             for packet_raw in self.packet_handler.recv_client(data):
+                cancelled = False
 
-                # Handshake
-                if packet_raw | PacketType.Outbound.Handshake:
-                    data = PacketHandler.read(PacketType.Outbound.Handshake, packet_raw)
+                for packet_type in self.outbound_listeners.keys():
+                    # Call listeners for detected packet
+                    if packet_raw | packet_type:
+                        for listener in self.outbound_listeners[packet_type]:
+                            # Make sure to only switch the cancelled state if it isn't already cancelled
+                            should_send_packet = listener(packet_raw.copy())
 
-                    protocol_version, server_address, server_port, next_state = (
-                        data['protocol_version'], data['server_address'],
-                        data['server_port'], data['next_state']
-                    )
+                            cancelled = (
+                                not should_send_packet
+                                if cancelled is False
+                                else True
+                            )
 
-                    info(f'Handshake packet received! State: [{ self.packet_handler.state } -> { State(next_state) }]')
+                        # Only use first packet type that matches.
+                        # Otherwise, changing something like the status can result in collisions with the same packet.
+                        break
 
-                    # The server address field is always 127.0.0.1, as the client is connecting to a local socket.
-                    # This must be edited, as servers may check this and not allow the proxy to connect.
-
-                    handshake = self.packet_handler.write(
-                        PacketType.Outbound.Handshake,
-
-                        protocol_version,
-                        self.config.get('server-address'),
-                        server_port,
-                        next_state
-                    )
-
-                    self.inbound_socket.sendall(handshake)
-
-                    # Reverse Enum lookup! Cool!
-                    self.packet_handler.state = State(next_state)
-
+                # Check if packet is cancelled or server is not connected
+                if cancelled or not self.server_connected:
                     continue
-
-                # Login Start
-                elif packet_raw | PacketType.Outbound.LoginStart:
-
-                    self.username = PacketHandler.read(PacketType.Outbound.LoginStart, packet_raw)['username']
-                    self.uuid = get_uuid(self.username)
-
-                    info(f'Received Login Start! [username={ self.username }, uuid={ self.uuid }]')
-
-                    # Send Login Start packet in advance
-                    self.inbound_socket.sendall(packet_raw.raw)
-                    info(f'[P -> S] Relayed Login Start to server! { packet_raw.raw }')
-
-                    # Fabricate Set Compression packet
-                    #   Compression threshold must be known beforehand, as this fake packet is sent before
-                    #   the real Set Compression is sent to the proxy by the server.
-
-                    set_compression = self.packet_handler.write(
-                        PacketType.Inbound.SetCompression,
-
-                        self.config.get('compression-threshold')
-                    )
-
-                    self.client_socket.sendall(set_compression)
-
-                    # Fabricate a Login Success packet, making the client think
-                    # the server is in offline mode.
-
-                    # Manual compression takes place as it isn't enabled till later.
-
-                    login_success = self.packet_handler.compression.compress(
-                        self.packet_handler.write(
-                            PacketType.Inbound.LoginSuccess,
-
-                            str(uuid.UUID(hex=self.uuid)),
-                            self.username
-                        ),
-                        override=True
-                    )
-
-                    self.client_socket.sendall(login_success)
-
-                    info(f'[C <- P] Sent Login Success to client! { login_success }')
-
-                    continue
-
-                if packet_raw.packet_id == 0x01:
-                    import json
-
-                    message = self.packet_handler.read(PacketType.Outbound.PlayerChatMessage, packet_raw)['message']
-
-                    if message.startswith('.bind'):
-                        module, key = message.split(' ')[1], message.split(' ')[2]
-                        mockery = self.packet_handler.write(
-                            PacketType.Inbound.SystemChatMessage,
-                            json.dumps({
-                                'text': '▍',
-                                'color': 'blue',
-                                'bold': True,
-                                'extra': [
-                                    {
-                                        'text': ' Successfully bound ',
-                                        'color': 'white',
-                                        'bold': False
-                                    },
-                                    {
-                                        'text': module,
-                                        'color': 'blue',
-                                        'bold': False
-                                    },
-                                    {
-                                        'text': ' to ',
-                                        'color': 'white',
-                                        'bold': False
-                                    },
-                                    {
-                                        'text': key,
-                                        'color': 'blue',
-                                        'bold': False
-                                    }
-                                ]
-                            }),
-                            1
-                        )
-
-                        self.client_socket.sendall(mockery)
-                        continue
 
                 # Send packet
                 packet = packet_raw.raw
 
                 if self.packet_handler.encryption:
-                    packet = self.cipher.encrypt(packet)
+                    packet = self.packet_handler.cipher.encrypt(packet)
 
-                self.inbound_socket.sendall(packet)
-
-                # if packet_raw.packet_id == 0x0a:
-                #
-                #     import json
-                #
-                #     mockery = self.packet_handler.write(
-                #         PacketType.Inbound.SystemChatMessage,
-                #         json.dumps({
-                #             'text': '▍',
-                #             'color': 'blue',
-                #             'bold': True,
-                #             'extra': [
-                #                 {
-                #                     'text': ' [VIP] whatsaxis',
-                #                     'color': 'green',
-                #                     'bold': False
-                #                 }
-                #             ]
-                #         }),
-                #         1
-                #     )
-                #
-                #     self.client_socket.sendall(mockery)
+                self.send_server(packet)
 
     def accept_server(self):
         """Function to accept packets from the server to relay them to the client."""
 
         while True:
-            data = self.inbound_socket.recv(1024)
+            if not self.server_connected:
+                continue
+
+            try:
+                data = self.inbound_socket.recv(1024)
+
+            except ConnectionError:
+                self.dc_mixin.disconnect(DisconnectReason.Quit)
+                continue
 
             for packet_raw in self.packet_handler.recv_server(data):
+                cancelled = False
 
-                # Encryption Request
-                if packet_raw | PacketType.Inbound.EncryptionRequest:
-                    packet = self.packet_handler.read_bytes(
-                        PacketType.Inbound.EncryptionRequest,
-                        packet_raw,
+                for packet_type in self.inbound_listeners.keys():
 
-                        prefix=False
-                    )
+                    # Call listeners for detected packet
+                    if packet_raw | packet_type:
+                        for listener in self.inbound_listeners[packet_type]:
+                            # Make sure to only switch the cancelled state if it isn't already cancelled
+                            should_send_packet = listener(packet_raw.copy())
 
-                    server_id, public_key, verify_token = (packet['server_id'], packet['public_key'],
-                                                           packet['verify_token'])
+                            cancelled = (
+                                not should_send_packet
+                                if cancelled is False
+                                else True
+                            )
 
-                    info('Received Encryption request!')
+                        break
 
-                    print('Server ID: ', server_id.decode('utf-8'))
-                    print('Public Key: ', public_key)
-                    print('Verify Token: ', verify_token)
-
-                    public_cipher = PublicKey(public_key)
-
-                    # Authenticate with Mojang servers
-
-                    info('Attempting to authenticate!')
-                    print('Session ID: ', get_access_token(self.config))
-                    print('Public Key: ', public_key)
-                    print('Server ID: ', server_id)
-                    print('UUID: ', self.uuid)
-
-                    auth_res = authenticate(
-                        session_id=get_access_token(self.config),
-                        cipher=self.cipher,
-                        public_key=public_key,
-                        server_id=server_id,
-                        uuid=self.uuid
-                    )
-
-                    if auth_res is True:
-                        success('Authenticated successfully!')
-                    else:
-                        error('Authentication failed!')
-
-                        status, res = auth_res
-                        print('Status: ', status)
-                        print('Payload: ', res)
-
-                        # Throw appropriate error.. TODO Change this later. I do not like it.
-                        for k, v in ERR_MAP.items():
-                            if res['error'].startswith(k):
-                                raise v()
-
-                    secret_encrypted = public_cipher.encrypt(self.cipher.secret)
-                    verify_token_encrypted = public_cipher.encrypt(verify_token)
-
-                    # Send encryption response
-                    enc_response = self.packet_handler.write(
-                        PacketType.Outbound.EncryptionResponse,
-
-                        len(secret_encrypted),
-                        secret_encrypted,
-                        len(verify_token_encrypted),
-                        verify_token_encrypted
-                    )
-
-                    self.inbound_socket.sendall(enc_response)
-
-                    info(f'[P -> S] Sent Encryption Response! { enc_response }')
-
-                    # Finalize encryption process
-                    self.packet_handler.encryption = True
-
-                    info('Encryption enabled!')
-
-                    # Block from going to the client, tricking it into Offline Mode
-                    continue
-
-                # Compression Set
-                elif packet_raw | PacketType.Inbound.SetCompression:
-                    info(f'Received Set Compression! { packet_raw }')
-                    self.packet_handler.compression.enabled = True
-
-                    threshold = self.packet_handler.read(
-                        PacketType.Inbound.SetCompression,
-                        packet_raw
-                    )['threshold']
-
-                    self.packet_handler.compression.threshold = threshold
-                    info(f'Enabled compression! [threshold={ threshold }]')
-
-                    # Block Compression Set packet - it has already been sent
-                    continue
-
-                # Login Success
-                elif packet_raw | PacketType.Inbound.LoginSuccess:
-                    info('Blocked Login Success!')
-
-                    # Finalize login - this is the last step as Login Success is already sent
-                    self.packet_handler.state = State.Play
-                    info(f'Switched state to { self.packet_handler.state }!')
-
-                    # Block Login Success packet - it has already been sent
+                # Check if the packet is cancelled or the client is not connected (for some reason)
+                if cancelled or not self.client_connected:
                     continue
 
                 # Send packet
-                packet = packet_raw.raw
+                self.send_client(packet_raw)
+
+    '''Sending'''
+    # TODO Will be refactored when the Packet() class is written
+
+    def send_client(self, packet: bytes | PacketRaw):
+        """Send a packet to the client."""
+
+        try:
+            if isinstance(packet, bytes):
                 self.client_socket.sendall(packet)
+                return
 
-                # print(packet_raw)
-                # print(packet_raw.raw)
+            self.client_socket.sendall(packet.raw)
+        except ConnectionError:
+            self.dc_mixin.disconnect(DisconnectReason.Quit)
 
-                if packet_raw.packet_id == 0x3e:
-                    import statrat.net.field as field
-                    team_name = packet_raw.data.read(field.String())
-                    mode = packet_raw.data.read(field.Byte())
+    def send_server(self, packet: bytes | PacketRaw):
+        """Send a packet to the server."""
 
-                    if mode == 3:
-                        no_entities = packet_raw.data.read(field.VarInt())
+        try:
+            if isinstance(packet, bytes):
+                self.inbound_socket.sendall(packet)
+                return
 
-                        entities = []
+            self.inbound_socket.sendall(packet.raw)
+        except ConnectionError:
+            self.dc_mixin.disconnect(DisconnectReason.Quit)
 
-                        for i in range(no_entities):
-                            entities.append(packet_raw.data.read(field.String()))
+    '''Listening'''
 
-                            import json
+    def listen(self, packet_type: InboundEnum | OutboundEnum):
+        """Registers a callback when certain a certain packet is sent or received."""
 
-                            mockery = self.packet_handler.write(
-                                PacketType.Inbound.SystemChatMessage,
-                                json.dumps({
-                                    'text': '▍',
-                                    'color': 'blue',
-                                    'bold': True,
-                                    'extra': [
-                                        {
-                                            'text': f' [VIP] { entities[i] }',
-                                            'color': 'green',
-                                            'bold': False
-                                        }
-                                    ]
-                                }),
-                                1
-                            )
+        registered = False
 
-                            self.client_socket.sendall(mockery)
+        def decorator(func: typing.Callable):
+            nonlocal registered
 
-                # print('[C <- P]', packet_raw)
-                #
-                # if packet_raw.packet_id not in {0x38}:
-                #     print(packet_raw, packet_raw.data.buffer)
+            if registered:
+                return func
+
+            if isinstance(packet_type, InboundEnum):
+                self.inbound_listeners[packet_type].append(func)
+            elif isinstance(packet_type, OutboundEnum):
+                self.outbound_listeners[packet_type].append(func)
+
+            registered = True
+
+            return func
+
+        return decorator
 
     def shutdown(self, _, __):
         """Function to shut down the proxy upon ``SIGINT``."""
 
-        # ``socket.SHUT_RDWR`` disallows further sends and receives.
-        # Followed by `close()`, clearing the file descriptor buffer.
-
-        self.inbound_socket.shutdown(socket.SHUT_RDWR)
         self.inbound_socket.close()
-
-        self.client_socket.shutdown(socket.SHUT_RDWR)
         self.client_socket.close()
-
-        self.outbound_socket.shutdown(socket.SHUT_RDWR)
         self.outbound_socket.close()

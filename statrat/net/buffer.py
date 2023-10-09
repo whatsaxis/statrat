@@ -17,6 +17,8 @@ class Buffer:
         Optional ``raw`` parameter to return the offset as well.
         """
 
+        # TODO Refactor as_bytes to a separate read_bytes() function
+
         # Read field and splice buffer
         offset, data = field.from_bytes(self.copy())
 

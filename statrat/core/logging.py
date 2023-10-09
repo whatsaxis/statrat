@@ -8,6 +8,8 @@ SUCCESS_COLOR = (204, 255, 51)
 WARNING_COLOR = (255, 204, 85)
 ERROR_COLOR = (255, 51, 102)
 
+# TODO A redux-type broadcast thing for logging
+
 
 def colored(msg: str, color: tuple[int, int, int]):
     """
@@ -32,10 +34,16 @@ def success(msg: str):
     print(colored('[SUCCESS]', SUCCESS_COLOR) + ' ' + msg)
 
 
-def warm(msg: str):
+def warn(msg: str):
     """Warning logging function."""
 
     print(colored('[WARN]', WARNING_COLOR) + ' ' + msg)
+
+
+def disconnect(msg: str):
+    """Disconnect logging function."""
+
+    print(colored('[DISCONNECT]', WARNING_COLOR) + ' ' + msg)
 
 
 def error(msg: str):

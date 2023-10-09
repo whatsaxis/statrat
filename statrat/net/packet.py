@@ -1,3 +1,5 @@
+import os
+
 from enum import Enum
 
 import statrat.net.field as field
@@ -11,94 +13,27 @@ from statrat.core.error import IncorrectPacketLengthError
 class State(Enum):
     Status = 1
     Login = 2
-    Play = 3
+
+    # Numbers are arbitrary for the below.
+    # Handshake packet can only switch state to Status or Login, and
+    # Login Success changes always changes the state to Play.
+
+    Handshaking = -1
+    Configuration = -2
+    Play = -3
 
 
-class PacketType:
+class Direction(Enum):
+    Inbound = 'in'
+    Outbound = 'out'
 
-    class Inbound(Enum):
-        EncryptionRequest = (
-            0x01,
-            State.Login,
-            (
-                ('server_id', field.String()),
-                ('public_key', field.Array(field.Byte())),
-                ('verify_token', field.Array(field.Byte()))
-            )
-        )
 
-        LoginSuccess = (
-            0x02,
-            State.Login,
-            (
-                ('uuid', field.String()),
-                ('username', field.String())
-            )
-        )
+class InboundEnum(Enum):
+    """Inbound enumeration base class."""
 
-        SetCompression = (
-            0x03,
-            State.Login,
-            (
-                ('threshold', field.VarInt()),
-            )
-        )
 
-        SystemChatMessage = (
-            0x02,
-            State.Play,
-            (
-                ('message', field.String()),
-                ('type', field.Byte())
-            )
-        )
-
-    class Outbound(Enum):
-
-        Handshake = (
-            0x00,
-            State.Status,
-            (
-                ('protocol_version', field.VarInt()),
-                ('server_address', field.String()),
-                ('server_port', field.UnsignedShort()),
-                ('next_state', field.VarInt())
-            )
-        )
-
-        LoginStart = (
-            0x00,
-            State.Login,
-            (
-                ('username', field.String()),
-            )
-        )
-
-        EncryptionResponse = (
-            0x01,
-            State.Login,
-
-            # Dynamic array field is NOT used here, as the length of the field is
-            # not encrypted, but the data of the field is (why)!
-
-            # Thankfully, the size of both fields is constant (128 bytes) due to PKCS#1 v1.5 padding.
-
-            (
-                ('shared_secret_length', field.VarInt()),
-                ('shared_secret', field.Array(field.UnsignedByte(), 128)),
-
-                ('verify_token_length', field.VarInt()),
-                ('verify_token', field.Array(field.UnsignedByte(), 128))
-            )
-        )
-
-        PlayerChatMessage = (
-            0x01,
-            State.Play,
-            (
-                ('message', field.String()),
-            )
-        )
+class OutboundEnum(Enum):
+    """Outbound enumeration base class."""
 
 
 class PacketRaw:
@@ -132,10 +67,16 @@ class PacketRaw:
 
         self.data = buff
 
-    def __or__(self, other: PacketType.Inbound | PacketType.Outbound):
+    def copy(self):
+        return PacketRaw(self.raw, canonical=self.canonical, handler=self.handler)
+
+    def __or__(self, other: InboundEnum | OutboundEnum):
         return (
             self.packet_id == other.value[0] and
-            ((self.handler is not None and self.handler.state == other.value[1]) or self.handler is None)
+            (
+                    (self.handler is not None and self.handler.state == other.value[1]) or
+                    self.handler is None
+            )
         )
 
     def __repr__(self):
@@ -150,15 +91,14 @@ class PacketRaw:
 class PacketHandler:
     """A handler for incoming and outgoing packets."""
 
-    def __init__(self, cipher: AESCipher):
-
-        self.cipher = cipher
+    def __init__(self):
+        self.cipher = AESCipher(secret=os.urandom(16))
 
         # Compression
         self.compression = Compression()
 
         # State regarding the handshake and encryption process
-        self.state = State.Status
+        self.state = State.Handshaking
         self.encryption = False
 
         # Byte stacks
@@ -205,10 +145,12 @@ class PacketHandler:
 
     @staticmethod
     def read(
-            packet_type: PacketType.Inbound | PacketType.Outbound | int,
+            packet_type: InboundEnum | OutboundEnum | int,
             packet_raw: PacketRaw
     ):
         """Read the raw data fields from a raw packet."""
+
+        # TODO Improve PacketRaw to have a get_fields function
 
         packet_id, _, fields = packet_type.value
         buffer = Buffer(packet_raw.data.buffer)
@@ -223,7 +165,7 @@ class PacketHandler:
 
     @staticmethod
     def read_bytes(
-            packet_type: PacketType.Inbound | PacketType.Outbound,
+            packet_type: InboundEnum | OutboundEnum,
             packet_raw: PacketRaw,
             *, prefix=True
     ):
@@ -241,6 +183,8 @@ class PacketHandler:
         for f in fields:
             field_name, field_type = f
 
+            print('Reading', field_name, field_type)
+
             if not prefix:
                 data[field_name] = field.remove_prefix(
                     field=field_type,
@@ -253,7 +197,7 @@ class PacketHandler:
 
         return data
 
-    def write(self, packet_type: PacketType.Inbound | PacketType.Outbound, *data):
+    def write(self, packet_type: InboundEnum | OutboundEnum, *data):
         """
         Write data into a Minecraft packet.
 
@@ -280,8 +224,8 @@ class PacketHandler:
         packet = self.compression.compress(packet)
 
         # Encryption
-        # TODO Make it only encrypt if outbound
-        if self.encryption and isinstance(packet_type, PacketType.Outbound):
+        #   Only encrypt outbound packets.
+        if self.encryption and isinstance(packet_type, OutboundEnum):
             return self.cipher.encrypt(packet)
 
         return packet
