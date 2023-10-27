@@ -115,8 +115,8 @@ class Packet:
 
         if data is None:
             fields_empty = {
-                f: None
-                for f in self.packet_type.value[2].keys()
+                f[0]: None
+                for f in self.packet_type.value[2]
             }
 
             self.fields_real = fields_empty.copy()
@@ -185,7 +185,7 @@ class Packet:
         """Writes to the byte representation of a certain field."""
 
         self.fields_byte[field_name] = data
-        self.fields_real[field_name] = self._packet_fields[field_name].from_bytes(Buffer(data))
+        self.fields_real[field_name] = self._packet_fields[field_name].from_bytes(Buffer(data))[1]
 
     def construct(self):
         """Converts a `Packet()` object to bytes."""
@@ -207,7 +207,6 @@ class Packet:
 
         return f'''Packet[
     type={ self.packet_type },
-    size={ self.raw.length },
     fields=[{ field_data }\n    ]\n]'''
 
 
@@ -282,6 +281,9 @@ class PacketHandler:
             field_name, field_type = f
             data[field_name] = buffer.read(field_type)
 
+        if len(buffer) != 0:
+            raise IndexError('Buffer is not empty!')
+
         return data
 
     @staticmethod
@@ -304,6 +306,9 @@ class PacketHandler:
         for f in packet_fields:
             field_name, field_type = f
             data[field_name] = buffer.read_bytes(field_type, prefix=prefix)
+
+        if len(buffer) != 0:
+            raise IndexError('Buffer is not empty!')
 
         return data
 
@@ -340,5 +345,5 @@ class PacketHandler:
 
         return packet
 
-    def create_packet(self, packet_type: InboundEnum | OutboundEnum, data: bytes | PacketRaw | None = None,):
+    def create_packet(self, packet_type: InboundEnum | OutboundEnum, data: bytes | PacketRaw | None = None):
         return Packet(packet_type, data, handler=self)

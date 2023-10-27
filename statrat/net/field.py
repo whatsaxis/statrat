@@ -1,4 +1,5 @@
 import math
+import uuid as uuid_lib
 import struct
 
 from statrat.net.buffer import Buffer
@@ -168,21 +169,25 @@ class String(Field):
         return len_size + length, payload.decode('utf-8')
 
     def to_bytes(self, s: str, *rest):
+
+        # Bytes aren't always a 1-1 to characters!
+        b = bytes(s, encoding='utf-8')
+
         return \
-            VarInt().to_bytes(len(s)) + \
-            bytes(s, encoding='utf-8')
+            VarInt().to_bytes(len(b)) + \
+            b
 
 
 class UUID(Field):
 
     def from_bytes(self, buffer: Buffer):
-        return 16, str(buffer.read_n_bytes(16))
+        return 16, str(uuid_lib.UUID(bytes=buffer.read_n_bytes(16))).replace('-', '')
 
     def to_bytes(self, uuid: str, *rest):
 
         # Dashes NOT included, as they are traditionally
         # not present in packets.
-        return bytes(uuid, encoding='utf-8')
+        return uuid_lib.UUID(uuid).bytes
 
 
 class Position(Field):
@@ -233,6 +238,38 @@ Not formally in the MC protocol, but common patterns in many packets.
 """
 
 
+class Container(Field):
+    """A container field to hold two or more fields together."""
+
+    has_prefix = False
+
+    def __init__(self, *fields: tuple[str, Field]):
+        self.fields = fields
+
+    def from_bytes(self, buffer: Buffer):
+        offset, values = 0, []
+
+        for f in self.fields:
+            # TODO At some point incorporate the name thing with the read_field()
+            off, data = buffer.read(f[1], offset=True)
+
+            offset += off
+            values.append(data)
+
+        return offset, tuple(values)
+
+    def to_bytes(self, data, *rest):
+        b = bytes()
+
+        for i, (name, field) in enumerate(self.fields):
+            b += field.to_bytes(data[i])
+
+        return b
+
+    def __repr__(self):
+        return f'Container[{ ", ".join(repr(f[1]) for f in self.fields) }]'
+
+
 class Optional(Field):
     """Optional class, allowing for optional fields."""
 
@@ -245,13 +282,14 @@ class Optional(Field):
         self.field = field
 
     def from_bytes(self, buffer: Buffer):
-        status = buffer.read(Bool())
+        status_offset, status = buffer.read(Bool(), offset=True)
 
         if status is True:
             # If status is True, and there is indeed a next byte, obtain it
-            return buffer.read(self.field)
+            offset, value = buffer.read(self.field, offset=True)
+            return offset + status_offset, value
 
-        return False
+        return status_offset, False
 
     def to_bytes(self, value: Any, *rest):
 

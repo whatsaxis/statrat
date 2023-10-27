@@ -1,0 +1,10 @@
+server-address: mc.hypixel.net
+server-port: 25565
+
+favicon: "Rat 64x64.png"
+motd: "            \u00A7c\u00A7ka\u00A7r \u00A79\u00A7lStatRat Proxy \u00A7r\u00A76[1.8.9] \u00A7c\u00A7ka\u00A7r\n                Definitely not a virus!"
+
+compression-threshold: 256
+
+username: "whatsaxis"
+session-id: "eyJraWQiOiJhYzg0YSIsImFsZyI6IkhTMjU2In0.eyJ4dWlkIjoiMjUzNTQ3MDMyMTkxNDc4OCIsImFnZyI6IkFkdWx0Iiwic3ViIjoiMjhhMjQyYzgtN2FlMS00OWExLWFmYzItYjY2ZDU5NDAyZjg2IiwiYXV0aCI6IlhCT1giLCJucyI6ImRlZmF1bHQiLCJyb2xlcyI6W10sImlzcyI6ImF1dGhlbnRpY2F0aW9uIiwiZmxhZ3MiOlsidHdvZmFjdG9yYXV0aCIsIm1pbmVjcmFmdF9uZXQiLCJtc2FtaWdyYXRpb25fc3RhZ2U0Iiwib3JkZXJzXzIwMjIiXSwicHJvZmlsZXMiOnsibWMiOiIyMGUwZTNhYy0zZTdiLTQ0ZDAtYmFhMS01MTk4MTkwMTIzZjgifSwicGxhdGZvcm0iOiJVTktOT1dOIiwieXVpZCI6ImRjNWU0MDMwNTIyNzQ2YWQ4OGUxNDJmZDVkMDVkZTJiIiwibmJmIjoxNjk4NDE2MTQwLCJleHAiOjE2OTg1MDI1NDAsImlhdCI6MTY5ODQxNjE0MH0.6klBFzvsdn2a3gCLIdjH4VtF9ekTUCDUFLiHbfHdfjE"

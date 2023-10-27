@@ -171,9 +171,13 @@ class Proxy:
             # Call listeners for detected packet
             if packet_raw | packet_type:
                 for listener in listeners[packet_type]:
+                    callback, raw = listener
+
                     # Make sure to only switch the cancelled state if it isn't already cancelled
-                    should_send_packet = listener(
-                        self.packet_handler.create_packet(packet_type, packet_raw.copy())
+                    should_send_packet = callback(
+                        self.create_packet(packet_type, packet_raw.copy())
+                        if not raw
+                        else packet_raw
                     )
 
                     cancelled = (
@@ -189,6 +193,9 @@ class Proxy:
         return cancelled
 
     '''Sending'''
+
+    def create_packet(self, packet_type: InboundEnum | OutboundEnum, data: bytes | PacketRaw | None = None) -> Packet:
+        return self.packet_handler.create_packet(packet_type, data)
 
     def send_client(self, packet: Packet | PacketRaw | bytes):
         """Send a packet to the client."""
@@ -218,7 +225,7 @@ class Proxy:
 
     '''Listening'''
 
-    def listen(self, packet_type: InboundEnum | OutboundEnum):
+    def listen(self, packet_type: InboundEnum | OutboundEnum, raw=False):
         """Registers a callback when certain a certain packet is sent or received."""
 
         registered = False
@@ -230,9 +237,9 @@ class Proxy:
                 return func
 
             if isinstance(packet_type, InboundEnum):
-                self.inbound_listeners[packet_type].append(func)
+                self.inbound_listeners[packet_type].append((func, raw))
             elif isinstance(packet_type, OutboundEnum):
-                self.outbound_listeners[packet_type].append(func)
+                self.outbound_listeners[packet_type].append((func, raw))
 
             registered = True
 

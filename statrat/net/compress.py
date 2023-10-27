@@ -27,8 +27,9 @@ class Compression:
         #   A \x00 byte is placed between the size and data fields, which means it is below
         #   the server compression threshold. This is what the below condition verifies.
 
-        if uncompressed_data_size == 0 or packet_size < self.threshold:
+        if uncompressed_data_size == 0x00 or packet_size <= self.threshold:
             # Turns out `packet_size < self.threshold` is needed. I do not know why.
+            # Possible header check error because wiki.vg says it has to be LARGER than the threshold... oops!
 
             return VarInt().to_bytes(len(data)) + data
 
